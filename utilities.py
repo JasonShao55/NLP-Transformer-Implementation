@@ -14,11 +14,14 @@ class Utilities:
 
         # Prepare the padded input for the model
         padded_sentence = wordids[:block_size] + [0] * (block_size - len(wordids))
-        input_tensor = torch.tensor(padded_sentence, dtype=torch.long).unsqueeze(0)
+        input_tensor = torch.tensor(padded_sentence, dtype=torch.long).unsqueeze(1)
 
         # Display input tensor shape
         print("Input tensor shape:", input_tensor.shape)
 
+        # Device management
+        device = next(self.model.parameters()).device
+        input_tensor = input_tensor.to(device)
         # Process the input tensor through the encoder model
         _,  attn_maps = self.model(input_tensor) # Ignore the output of the model, and only get the attention maps; make sure your encoder returns the attention maps
 

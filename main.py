@@ -3,6 +3,7 @@ from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import os
 import torch.nn as nn
+import sys
 
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
@@ -28,7 +29,7 @@ n_layer = 4  # Number of transformer layers
 
 
 eval_interval = 100  # How often to evaluate train and test perplexity during training
-max_iters = 5.01 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
+max_iters = 501 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
 eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
 
 
@@ -85,10 +86,7 @@ def compute_classifier_accuracy(classifier, data_loader):
         for i, (X, Y) in enumerate(data_loader):
             X, Y = X.to(device), Y.to(device)
             #assert X.size() == (batch_size, block_size), f"X.size(): {X.size()}, expected: {(batch_size, block_size)}"
-            #print(X.size())
-            #encoder_outputs, _ = encoder(X)
-            outputs = classifier(X)
-            #if i==0: print("----output---",outputs, "----output size---",outputs.size())
+            outputs,_ = classifier(X)
             _, predicted = torch.max(outputs.data, 1)
             total_correct += (predicted == Y).sum().item()
             total_samples += Y.size(0)
@@ -169,21 +167,10 @@ def main():
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
-    num_params = sum(p.numel() for p in model.parameters())
-    print(f"Total number of parameters: {num_params}")
+    # num_params = sum(p.numel() for p in model.parameters())
+    # print(f"Total number of parameters: {num_params}")
     criterion = nn.CrossEntropyLoss()
 
-    # Initialize the TransformerEncoder and FeedForwardClassifier
-    # encoder = TransformerEncoder(
-    #     vocab_size=tokenizer.vocab_size, 
-    #     embed_dim=n_embd, 
-    #     num_heads=n_head, 
-    #     ff_dim=256, 
-    #     num_layers=n_layer, 
-    #     dropout=0.1
-    # ).to(device)
-    # classifier = FeedForwardClassifier(embed_dim=n_embd, num_classes=n_output, hidden_dim=n_hidden).to(device)
-    # optimizer_cls = torch.optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=learning_rate)
     classifier = TransformerClassifier(
         src_vocab_size=tokenizer.vocab_size,
         embed_size=n_embd, 
@@ -191,82 +178,72 @@ def main():
         heads=n_head, 
         device=device, 
         forward_expansion=forward_expansion, 
-        dropout=0, 
+        dropout=0,      # best when 0
         max_length=block_size, 
         num_classes=n_output
     ).to(device)
     optimizer_cls = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
-    num_params = sum(p.numel() for p in classifier.parameters())
-    print(f"Total number of parameters: {num_params}")
+    # num_params = sum(p.numel() for p in classifier.parameters())
+    # print(f"Total number of parameters: {num_params}")
     criterion_cls = nn.CrossEntropyLoss()
 
-
+    if len(sys.argv) < 2 or sys.argv[1]=='part1':
      # for the classification  task, you will train for a fixed number of epochs like this:
-    for epoch in range(epochs_CLS):
-        #classifier.train()
-        epoch_loss = 0
-        for xb, yb in train_CLS_loader:
-            xb, yb = xb.to(device), yb.to(device)
-            # CLS training code here
-            optimizer_cls.zero_grad()
-            #print(f"Shape of xb: {xb.size()}")  # Debug print
-            outputs = classifier(xb)
-            #print("outputs:",outputs, "size",outputs.size())
-            #outputs = classifier(encoder_outputs)
-            #res, predicted = torch.max(outputs.data, 1)
-            #print(predicted,predicted.size())
-            #print(yb, yb.size())
-            #total_correct += (predicted == yb).sum().item()
-            loss = criterion_cls(outputs, yb)
-            loss.backward()
-            optimizer_cls.step()
-        accuracy = compute_classifier_accuracy(classifier, test_CLS_loader)
-        print(f'Epoch {epoch+1}/{epochs_CLS}, Train Loss: {loss}, Accuracy: {accuracy:.2f}%')
-        # print("Gradients check:")
-        # for i, (name, param) in enumerate(classifier.named_parameters()):
-        #     if param.grad is not None and i==0:
-        #         print(f"Layer: {name} | Grad mean: {param.grad.mean()} | Grad max: {param.grad.max()} | Grad min: {param.grad.min()}")
+        for epoch in range(epochs_CLS):
+            #classifier.train()
+            for xb, yb in train_CLS_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                # CLS training code here
+                optimizer_cls.zero_grad()
+                outputs,_ = classifier(xb)
+                loss = criterion_cls(outputs, yb)
+                loss.backward()
+                optimizer_cls.step()
+            accuracy = compute_classifier_accuracy(classifier, test_CLS_loader)
+            print(f'Epoch {epoch+1}/{epochs_CLS}, Train Loss: {loss}, Accuracy: {accuracy:.2f}%')
 
-    print('CLS Training complete.')
-    utils.sanity_check(sentence, block_size)
-
-
-    # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
-    for i, (xb, yb) in enumerate(train_LM_loader):
-        if i >= max_iters:
-            break
-        xb, yb = xb.to(device), yb.to(device)
-        # LM training code here
-        #if (i==0): print("----xb shape---",xb.shape,"----yb shape---",yb.shape)
-
-        # Transpose the dimensions of xb to (seq_len, batch_size)
-        xb,yb = xb.transpose(0, 1),yb.transpose(0, 1)
-         # Create the mask
-        mask = create_mask(xb.size(0)).to(device)
-
-        # Forward pass
-        optimizer.zero_grad()
-        outputs,_ = model(xb, mask)
-
-        # Calculate the loss
-        #loss = criterion(outputs.view(-1, tokenizer.vocab_size), yb.view(-1))
-        loss = criterion(outputs.reshape(-1, tokenizer.vocab_size), yb.reshape(-1))
-
-        # Backward pass and optimization
-        loss.backward()
-        optimizer.step()
-
-        # Print iteration every eval_interval
-        if i % 100 == 0:
-            # print perplexity:
-            perplexity = compute_perplexity(model, perplexity_data_loader, eval_iters, tokenizer) # Train perplexity
-            print(f"Iteration {i}, Loss: {loss.item()}, Perplexity: {perplexity}") 
+        print('CLS Training complete.')
+        sentence = "That's how progress happens -- in societies and in our own lives."
+        utils = Utilities(tokenizer, classifier)
+        utils.sanity_check(sentence, block_size)
     
-    print('Training complete.')
-    # sanity check
-    sentence = "It is costly and politically difficult to continue this conflict."
-    utils = Utilities(tokenizer, model)
-    utils.sanity_check_decoder(sentence, block_size)
+    if sys.argv[1]=='part2':
+        # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
+        for i, (xb, yb) in enumerate(train_LM_loader):
+            if i >= max_iters:
+                break
+            xb, yb = xb.to(device), yb.to(device)
+            # LM training code here
+            #if (i==0): print("----xb shape---",xb.shape,"----yb shape---",yb.shape)
+
+            # Transpose the dimensions of xb to (seq_len, batch_size)
+            xb,yb = xb.transpose(0, 1),yb.transpose(0, 1)
+            # Create the mask
+            mask = create_mask(xb.size(0)).to(device)
+
+            # Forward pass
+            optimizer.zero_grad()
+            outputs,_ = model(xb, mask)
+
+            # Calculate the loss
+            #loss = criterion(outputs.view(-1, tokenizer.vocab_size), yb.view(-1))
+            loss = criterion(outputs.reshape(-1, tokenizer.vocab_size), yb.reshape(-1))
+
+            # Backward pass and optimization
+            loss.backward()
+            optimizer.step()
+
+            # Print iteration every eval_interval
+            if i % 100 == 0:
+                # print perplexity:
+                perplexity = compute_perplexity(model, perplexity_data_loader, eval_iters, tokenizer) # Train perplexity
+                print(f"Iteration {i}, Loss: {loss.item()}, Perplexity: {perplexity}") 
+        
+        print('Training complete.')
+        # sanity check
+        sentence = "It is costly and politically difficult to continue this conflict."
+        utils = Utilities(tokenizer, model)
+        utils.sanity_check_decoder(sentence, block_size)
 
 
 
