@@ -2,9 +2,13 @@ import torch
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
 import os
+import torch.nn as nn
 
 from tokenizer import SimpleTokenizer
 from dataset import SpeechesClassificationDataset, LanguageModelingDataset
+
+from transformer import TransformerDecoder, create_mask
+from utilities import Utilities
 
 
 seed = 42
@@ -22,7 +26,7 @@ n_layer = 4  # Number of transformer layers
 
 
 eval_interval = 100  # How often to evaluate train and test perplexity during training
-max_iters = 500 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
+max_iters = 501 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
 eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
 
 
@@ -78,18 +82,24 @@ def compute_classifier_accuracy(classifier, data_loader):
         return accuracy
 
 
-def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100):
+def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100, tokenizer=None):
     """ Compute the perplexity of the decoderLMmodel on the data in data_loader.
     Make sure to use the cross entropy loss for the decoderLMmodel.
     """
     decoderLMmodel.eval()
     losses= []
-    for X, Y in data_loader:
-        X, Y = X.to(device), Y.to(device)
-        loss = decoderLMmodel(X, Y) # your model should be computing the cross entropy loss
-        losses.append(loss.item())
-        total_loss += loss.item()
-        if len(losses) >= eval_iters: break
+    with torch.no_grad():
+        for  i, (X, Y) in enumerate(data_loader):
+            X, Y = X.to(device), Y.to(device)
+            mask = create_mask(X.size(0)).to(device)  # Create the mask
+            outputs,_ = decoderLMmodel(X, mask)
+            #print("----output logits---",outputs)
+            criterion = nn.CrossEntropyLoss()
+            loss = criterion(outputs.view(-1, tokenizer.vocab_size), Y.view(-1))
+            #loss = decoderLMmodel(X, Y) # your model should be computing the cross entropy loss
+            losses.append(loss.item())
+            #total_loss += loss.item()
+            if len(losses) >= eval_iters: break
 
 
     losses = torch.tensor(losses)
@@ -116,6 +126,34 @@ def main():
     train_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
     train_LM_loader = DataLoader(train_LM_dataset, batch_size=batch_size, shuffle=True)
 
+    '''Perplexity test data'''
+    #inputfile = "speechesdataset/test_LM_hbush.txt"
+    inputfile = "speechesdataset/test_LM_obama.txt"
+    #inputfile = "speechesdataset/test_LM_wbush.txt"
+    with open(inputfile, 'r', encoding='utf-8') as f:
+        lmtrainText = f.read()
+    test_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
+    test_LM_loader = DataLoader(test_LM_dataset, batch_size=batch_size, shuffle=True)
+    #perplexity_data_loader=train_LM_loader #train perplexity 
+    perplexity_data_loader=test_LM_loader #other perplexity 
+
+    ''' Model initialization here'''
+    # Initialize the TransformerDecoder model
+    model = TransformerDecoder(
+        vocab_size=tokenizer.vocab_size,
+        max_seq_len=block_size,
+        embed_dim=n_embd,
+        num_heads=n_head,
+        ff_hidden_dim=100,  # Hidden dimension for feed-forward network in the transformer decoder
+        num_layers=n_layer,
+        dropout=0.1
+    ).to(device)
+
+    optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    criterion = nn.CrossEntropyLoss()
+
+
+
      # for the classification  task, you will train for a fixed number of epochs like this:
     for epoch in range(epochs_CLS):
         for xb, yb in train_CLS_loader:
@@ -129,6 +167,34 @@ def main():
             break
         xb, yb = xb.to(device), yb.to(device)
         # LM training code here
+
+         # Create the mask
+        mask = create_mask(xb.size(0)).to(device)
+
+        # Forward pass
+        optimizer.zero_grad()
+        outputs,_ = model(xb, mask)
+
+        # Calculate the loss
+        loss = criterion(outputs.view(-1, tokenizer.vocab_size), yb.view(-1))
+
+        # Backward pass and optimization
+        loss.backward()
+        optimizer.step()
+
+        # Print iteration every eval_interval
+        if i % 100 == 0:
+            # print perplexity:
+            perplexity = compute_perplexity(model, perplexity_data_loader, eval_iters, tokenizer) # Train perplexity
+            print(f"Iteration {i}, Loss: {loss.item()}, Perplexity: {perplexity}") 
+    
+    print('Training complete.')
+    # sanity check
+    sentence = "It is costly and politically difficult to continue this conflict."
+    utils = Utilities(tokenizer, model)
+    utils.sanity_check_decoder(sentence, block_size)
+
+
 
     
 
