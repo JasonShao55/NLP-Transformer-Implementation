@@ -10,6 +10,8 @@ from dataset import SpeechesClassificationDataset, LanguageModelingDataset
 from transformer import TransformerDecoder, create_mask
 from utilities import Utilities
 
+#from transformer import TransformerEncoder, FeedForwardClassifier
+from transformer import TransformerClassifier
 
 seed = 42
 
@@ -37,6 +39,7 @@ n_input = 64  # Input size for the classifier, should match the embedding size o
 n_hidden = 100  # Hidden size for the classifier
 n_output = 3  # Output size for the classifier, we have 3 classes
 epochs_CLS = 15 # epochs for classifier training
+forward_expansion=4 # set to 4 like the original paper
 
 def load_texts(directory):
     """
@@ -63,23 +66,36 @@ def collate_batch(batch):
     # Add padding if shorter
     padded_sequences = torch.nn.functional.pad(padded_sequences, (0, max(0, block_size - padded_sequences.shape[1])), "constant", 0)
     labels = torch.stack(labels)  
+    # if len(padded_sequences) < batch_size:
+    #     pad_size = batch_size - len(padded_sequences)
+    #     pad_data = torch.zeros((pad_size, block_size), dtype=padded_sequences.dtype)
+    #     pad_labels = torch.zeros((pad_size,), dtype=labels.dtype)
+    #     padded_sequences = torch.cat((padded_sequences, pad_data), dim=0)
+    #     labels = torch.cat((labels, pad_labels), dim=0)
+
     return padded_sequences, labels
 
 def compute_classifier_accuracy(classifier, data_loader):
     """ Compute the accuracy of the classifier on the data in data_loader."""
     classifier.eval()
+    #encoder.eval()
     total_correct = 0
     total_samples = 0
     with torch.no_grad():
-        for X, Y in data_loader:
+        for i, (X, Y) in enumerate(data_loader):
             X, Y = X.to(device), Y.to(device)
+            #assert X.size() == (batch_size, block_size), f"X.size(): {X.size()}, expected: {(batch_size, block_size)}"
+            #print(X.size())
+            #encoder_outputs, _ = encoder(X)
             outputs = classifier(X)
+            #if i==0: print("----output---",outputs, "----output size---",outputs.size())
             _, predicted = torch.max(outputs.data, 1)
             total_correct += (predicted == Y).sum().item()
             total_samples += Y.size(0)
         accuracy = (100 * total_correct / total_samples)
         classifier.train()
-        return accuracy
+        #encoder.train()
+    return accuracy
 
 
 def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100, tokenizer=None):
@@ -120,7 +136,8 @@ def main():
 
     train_CLS_dataset = SpeechesClassificationDataset(tokenizer, "speechesdataset/train_CLS.tsv")
     train_CLS_loader = DataLoader(train_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
-
+    test_CLS_dataset = SpeechesClassificationDataset(tokenizer, "speechesdataset/test_CLS.tsv")
+    test_CLS_loader = DataLoader(test_CLS_dataset, batch_size=batch_size,collate_fn=collate_batch,shuffle=True)
   
     inputfile = "speechesdataset/train_LM.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
@@ -140,7 +157,7 @@ def main():
     perplexity_data_loader=test_LM_loader #other perplexity 
 
     ''' Model initialization here'''
-    # Initialize the TransformerDecoder model
+    # Initialize the TransformerDecoder 
     model = TransformerDecoder(
         vocab_size=tokenizer.vocab_size,
         max_seq_len=block_size,
@@ -152,15 +169,66 @@ def main():
     ).to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=learning_rate)
+    num_params = sum(p.numel() for p in model.parameters())
+    print(f"Total number of parameters: {num_params}")
     criterion = nn.CrossEntropyLoss()
 
+    # Initialize the TransformerEncoder and FeedForwardClassifier
+    # encoder = TransformerEncoder(
+    #     vocab_size=tokenizer.vocab_size, 
+    #     embed_dim=n_embd, 
+    #     num_heads=n_head, 
+    #     ff_dim=256, 
+    #     num_layers=n_layer, 
+    #     dropout=0.1
+    # ).to(device)
+    # classifier = FeedForwardClassifier(embed_dim=n_embd, num_classes=n_output, hidden_dim=n_hidden).to(device)
+    # optimizer_cls = torch.optim.Adam(list(encoder.parameters()) + list(classifier.parameters()), lr=learning_rate)
+    classifier = TransformerClassifier(
+        src_vocab_size=tokenizer.vocab_size,
+        embed_size=n_embd, 
+        num_layers=n_layer,    # 6 in the paper but 4 here, to avoid gradient diminishing issues
+        heads=n_head, 
+        device=device, 
+        forward_expansion=forward_expansion, 
+        dropout=0, 
+        max_length=block_size, 
+        num_classes=n_output
+    ).to(device)
+    optimizer_cls = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
+    num_params = sum(p.numel() for p in classifier.parameters())
+    print(f"Total number of parameters: {num_params}")
+    criterion_cls = nn.CrossEntropyLoss()
 
 
      # for the classification  task, you will train for a fixed number of epochs like this:
     for epoch in range(epochs_CLS):
+        #classifier.train()
+        epoch_loss = 0
         for xb, yb in train_CLS_loader:
             xb, yb = xb.to(device), yb.to(device)
             # CLS training code here
+            optimizer_cls.zero_grad()
+            #print(f"Shape of xb: {xb.size()}")  # Debug print
+            outputs = classifier(xb)
+            #print("outputs:",outputs, "size",outputs.size())
+            #outputs = classifier(encoder_outputs)
+            #res, predicted = torch.max(outputs.data, 1)
+            #print(predicted,predicted.size())
+            #print(yb, yb.size())
+            #total_correct += (predicted == yb).sum().item()
+            loss = criterion_cls(outputs, yb)
+            loss.backward()
+            optimizer_cls.step()
+        accuracy = compute_classifier_accuracy(classifier, test_CLS_loader)
+        print(f'Epoch {epoch+1}/{epochs_CLS}, Train Loss: {loss}, Accuracy: {accuracy:.2f}%')
+        # print("Gradients check:")
+        # for i, (name, param) in enumerate(classifier.named_parameters()):
+        #     if param.grad is not None and i==0:
+        #         print(f"Layer: {name} | Grad mean: {param.grad.mean()} | Grad max: {param.grad.max()} | Grad min: {param.grad.min()}")
+
+    print('CLS Training complete.')
+    utils.sanity_check(sentence, block_size)
 
 
     # for the language modeling task, you will iterate over the training data for a fixed number of iterations like this:
