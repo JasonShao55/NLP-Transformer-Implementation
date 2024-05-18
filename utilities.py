@@ -56,7 +56,7 @@ class Utilities:
         padded_sentence = wordids[:block_size] + [0] * (block_size - len(wordids))
         input_tensor = torch.tensor(padded_sentence, dtype=torch.long).unsqueeze(1)
 
-        # Display input tensor shape
+        # Display input tensor shape, should be (block_size, 1)
         print("Input tensor shape:", input_tensor.shape)
 
         # Create the mask

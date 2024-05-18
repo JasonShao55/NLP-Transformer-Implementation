@@ -3,116 +3,75 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
-
 class CustomMultiheadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.0):
         super(CustomMultiheadAttention, self).__init__()
-        assert embed_dim % num_heads == 0, "Embedding dimension must be divisible by the number of heads."
-
         self.embed_dim = embed_dim
         self.num_heads = num_heads
+        self.dropout = dropout
         self.head_dim = embed_dim // num_heads
-        self.dropout = nn.Dropout(dropout)
+        assert self.head_dim * num_heads == self.embed_dim, "Embedding dimension must be divisible by number of heads"
 
         self.query = nn.Linear(embed_dim, embed_dim)
         self.key = nn.Linear(embed_dim, embed_dim)
         self.value = nn.Linear(embed_dim, embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.out = nn.Linear(embed_dim, embed_dim)
+
+        self.attention_dropout = nn.Dropout(dropout)
 
     def forward(self, query, key, value, attn_mask=None):
-        batch_size = query.size(1)
+        seq_len, batch_size, embed_dim = query.size()
+        num_heads = self.num_heads
 
         # Linear projections
-        Q = self.query(query)
-        K = self.key(key)
-        V = self.value(value)
+        Q = self.query(query)  # (seq_len, batch_size, embed_dim)
+        K = self.key(key)      # (seq_len, batch_size, embed_dim)
+        V = self.value(value)  # (seq_len, batch_size, embed_dim)
 
-        # Reshape into (num_heads, batch_size, seq_length, head_dim)
-        Q = Q.view(-1, batch_size, self.num_heads, self.head_dim).transpose(1, 2)
-        K = K.view(-1, batch_size, self.num_heads, self.head_dim).transpose(1, 2)
-        V = V.view(-1, batch_size, self.num_heads, self.head_dim).transpose(1, 2)
+        # Transpose for multi-head attention: (seq_len, batch_size, embed_dim) -> (batch_size, seq_len, embed_dim)
+        Q = Q.transpose(0, 1)
+        K = K.transpose(0, 1)
+        V = V.transpose(0, 1)
+
+        # Split into multiple heads and reshape to (batch_size * num_heads, seq_len, head_dim)
+        Q = Q.view(batch_size, seq_len, num_heads, self.head_dim).transpose(1, 2).contiguous().view(batch_size * num_heads, seq_len, self.head_dim)
+        K = K.view(batch_size, seq_len, num_heads, self.head_dim).transpose(1, 2).contiguous().view(batch_size * num_heads, seq_len, self.head_dim)
+        V = V.view(batch_size, seq_len, num_heads, self.head_dim).transpose(1, 2).contiguous().view(batch_size * num_heads, seq_len, self.head_dim)
 
         # Scaled dot-product attention
-        attn_scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
+        attn_scores = torch.bmm(Q, K.transpose(1, 2)) / (self.head_dim ** 0.5)  # (batch_size * num_heads, seq_len, seq_len)
+
         if attn_mask is not None:
-            attn_scores = attn_scores.masked_fill(attn_mask == 0, float('-inf'))
+            # Ensure attn_mask has the same shape as attn_scores
+            attn_mask = attn_mask.unsqueeze(0).expand(batch_size * num_heads, -1, -1)
+            attn_scores = attn_scores.masked_fill(attn_mask, float('-inf'))
 
-        attn_weights = F.softmax(attn_scores, dim=-1)
-        attn_weights = self.dropout(attn_weights)
-        attn_output = torch.matmul(attn_weights, V)
+        attn_probs = F.softmax(attn_scores, dim=-1)     
+        attn_probs = self.attention_dropout(attn_probs)     # ERROR if called after softmax, won't sum to 1
 
-        # Concatenate heads and put through final linear layer
-        attn_output = attn_output.transpose(1, 2).contiguous().view(-1, batch_size, self.embed_dim)
-        attn_output = self.out_proj(attn_output)
+        attn_output = torch.bmm(attn_probs, V)  # (batch_size * num_heads, seq_len, head_dim)
 
-        return attn_output, attn_weights
+        # Reshape back to (batch_size, seq_len, embed_dim)
+        attn_output = attn_output.view(batch_size, num_heads, seq_len, self.head_dim).transpose(1, 2).contiguous().view(batch_size, seq_len, embed_dim)
 
+        # Transpose back to original shape: (batch_size, seq_len, embed_dim) -> (seq_len, batch_size, embed_dim)
+        attn_output = attn_output.transpose(0, 1)
 
-# n_embd = 64  # Embedding dimension
-# block_size = 32  # Maximum context length for predictions
-# dropout=0.1
+        # Reshape attn_probs to (num_heads, batch_size, seq_len, seq_len) and then to (batch_size, num_heads, seq_len, seq_len)
+        attn_probs = attn_probs.view(batch_size, num_heads, seq_len, seq_len)
+        attn_map = attn_probs.mean(dim=1)  # Average over heads
 
-# class Head(nn.Module):
-#     """ one head of self-attention """
+        # Final linear projection
+        output = self.out(attn_output)
 
-#     def __init__(self, head_size):
-#         super().__init__()
-#         self.key = nn.Linear(n_embd, head_size, bias=False)
-#         self.query = nn.Linear(n_embd, head_size, bias=False)
-#         self.value = nn.Linear(n_embd, head_size, bias=False)
-#         self.register_buffer('tril', torch.tril(torch.ones(block_size, block_size)))
-
-#         self.dropout = nn.Dropout(dropout)
-
-#     def forward(self, x,mask=None):
-#         # input of size (batch, time-step, channels)
-#         # output of size (batch, time-step, head size)
-#         B,T,C = x.shape
-#         #print("forward x size:",x.size())
-#         k = self.key(x)   # (B,T,hs)
-#         q = self.query(x) # (B,T,hs)
-#         # compute attention scores ("affinities")
-#         wei = q @ k.transpose(-2,-1) * k.shape[-1]**-0.5 # (B, T, hs) @ (B, hs, T) -> (B, T, T)
-#         #wei = wei.masked_fill(self.tril[:T, :T] == 0, float('-inf')) # (B, T, T)
-#         # Apply attention mask if provided
-#         if mask is not None:
-#             #mask = mask[:, :T, :T]  # Ensure mask is the same size as wei
-#             #print("wei size:",wei.size())
-#             wei = wei.masked_fill(mask == 0, float('-inf')) # (B, T, T)
-#         wei = F.softmax(wei, dim=-1) # (B, T, T)
-#         wei = self.dropout(wei)
-#         # perform the weighted aggregation of the values
-#         v = self.value(x) # (B,T,hs)
-#         out = wei @ v # (B, T, T) @ (B, T, hs) -> (B, T, hs)
-#         return out,wei
-# class MultiHeadAttention(nn.Module):
-#     """ multiple heads of self-attention in parallel """
-
-#     def __init__(self, n_embd, num_heads, dropout):
-#         super().__init__()
-#         head_size = n_embd // num_heads
-#         self.heads = nn.ModuleList([Head(head_size) for _ in range(num_heads)])
-#         self.proj = nn.Linear(head_size * num_heads, n_embd)
-#         self.dropout = nn.Dropout(dropout)
-    
-#     def forward(self, x, attn_mask=None):
-#         head_outputs = []
-#         attn_maps = []
-#         for h in self.heads:
-#             out, attn_map = h(x, attn_mask)
-#             head_outputs.append(out)
-#             attn_maps.append(attn_map)
-#         out = torch.cat(head_outputs, dim=-1)
-#         out = self.dropout(self.proj(out))
-#         return out, attn_maps
+        return output, attn_map
 
 
 class TransformerDecoderBlock(nn.Module):
     def __init__(self, embed_dim, num_heads, ff_hidden_dim, dropout):
         super(TransformerDecoderBlock, self).__init__()
-        self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=0) # substitute with with my own MultiheadAttention
-        #self.self_attn = CustomMultiheadAttention(embed_dim, num_heads,dropout=dropout) # substitute with with my own MultiheadAttention
+        #self.self_attn = nn.MultiheadAttention(embed_dim, num_heads, dropout=0) # substitute with with my own MultiheadAttention
+        self.self_attn = CustomMultiheadAttention(embed_dim, num_heads,dropout=0) # substitute with with my own MultiheadAttention
         self.layernorm1 = nn.LayerNorm(embed_dim)
         self.ffn = nn.Sequential(
             nn.Linear(embed_dim, ff_hidden_dim),
@@ -164,15 +123,15 @@ class TransformerDecoder(nn.Module):
         #return F.cross_entropy(logits.view(-1, logits.size(-1)), x.view(-1))
         return logits, attn_maps
 
-# def create_mask(batch_size, seq_len):
-#     #print("create_mask:",batch_size,seq_len)
-#     mask = torch.triu(torch.ones(batch_size, seq_len, seq_len), diagonal=1).bool()
-#     return mask
+
+# 2D mask: (seq_len, seq_len) 
 def create_mask(seq_len):
     mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
     return mask
 
-
-# def create_mask(batch_size, seq_len):
-#     mask = torch.tril(torch.ones((seq_len, seq_len), dtype=torch.bool))
-#     return mask.unsqueeze(0)  # Add a batch dimension
+# 3D mask: (batch_size * num_heads, seq_len, seq_len)
+# def create_mask(batch_size, num_heads, seq_len):
+#     mask = torch.triu(torch.ones(seq_len, seq_len), diagonal=1).bool()
+#     mask = mask.unsqueeze(0).unsqueeze(0)  # Add batch and head dimensions
+#     mask = mask.expand(batch_size, num_heads, seq_len, seq_len).reshape(batch_size * num_heads, seq_len, seq_len)
+#     return mask

@@ -26,7 +26,7 @@ n_layer = 4  # Number of transformer layers
 
 
 eval_interval = 100  # How often to evaluate train and test perplexity during training
-max_iters = 501 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
+max_iters = 5.01 # For language modeling, we can process all the batches for the entire dataset, but that takes a while, so we'll limit it to 500 iterations. For batch size of 16 and block size of  32, this is roughly, this is  500 * 16 * 32 = 256000 tokens, SOTA LMs are trained on trillions of tokens, so this is a very small dataset.
 eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
 
 
@@ -91,11 +91,13 @@ def compute_perplexity(decoderLMmodel, data_loader, eval_iters=100, tokenizer=No
     with torch.no_grad():
         for  i, (X, Y) in enumerate(data_loader):
             X, Y = X.to(device), Y.to(device)
+            X,Y=X.transpose(0,1),Y.transpose(0,1)
             mask = create_mask(X.size(0)).to(device)  # Create the mask
             outputs,_ = decoderLMmodel(X, mask)
             #print("----output logits---",outputs)
             criterion = nn.CrossEntropyLoss()
-            loss = criterion(outputs.view(-1, tokenizer.vocab_size), Y.view(-1))
+            #loss = criterion(outputs.view(-1, tokenizer.vocab_size), Y.view(-1))
+            loss = criterion(outputs.reshape(-1, tokenizer.vocab_size), Y.reshape(-1))
             #loss = decoderLMmodel(X, Y) # your model should be computing the cross entropy loss
             losses.append(loss.item())
             #total_loss += loss.item()
@@ -128,8 +130,8 @@ def main():
 
     '''Perplexity test data'''
     #inputfile = "speechesdataset/test_LM_hbush.txt"
-    inputfile = "speechesdataset/test_LM_obama.txt"
-    #inputfile = "speechesdataset/test_LM_wbush.txt"
+    #inputfile = "speechesdataset/test_LM_obama.txt"
+    inputfile = "speechesdataset/test_LM_wbush.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
     test_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
@@ -167,7 +169,10 @@ def main():
             break
         xb, yb = xb.to(device), yb.to(device)
         # LM training code here
+        #if (i==0): print("----xb shape---",xb.shape,"----yb shape---",yb.shape)
 
+        # Transpose the dimensions of xb to (seq_len, batch_size)
+        xb,yb = xb.transpose(0, 1),yb.transpose(0, 1)
          # Create the mask
         mask = create_mask(xb.size(0)).to(device)
 
@@ -176,7 +181,8 @@ def main():
         outputs,_ = model(xb, mask)
 
         # Calculate the loss
-        loss = criterion(outputs.view(-1, tokenizer.vocab_size), yb.view(-1))
+        #loss = criterion(outputs.view(-1, tokenizer.vocab_size), yb.view(-1))
+        loss = criterion(outputs.reshape(-1, tokenizer.vocab_size), yb.reshape(-1))
 
         # Backward pass and optimization
         loss.backward()
