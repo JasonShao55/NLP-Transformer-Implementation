@@ -12,7 +12,7 @@ from transformer import TransformerDecoder, create_mask
 from utilities import Utilities
 
 #from transformer import TransformerEncoder, FeedForwardClassifier
-from transformer import TransformerClassifier
+from transformer import TransformerClassifier,TransformerModel
 
 seed = 42
 
@@ -144,9 +144,9 @@ def main():
     train_LM_loader = DataLoader(train_LM_dataset, batch_size=batch_size, shuffle=True)
 
     '''Perplexity test data'''
-    #inputfile = "speechesdataset/test_LM_hbush.txt"
+    inputfile = "speechesdataset/test_LM_hbush.txt"
     #inputfile = "speechesdataset/test_LM_obama.txt"
-    inputfile = "speechesdataset/test_LM_wbush.txt"
+    #inputfile = "speechesdataset/test_LM_wbush.txt"
     with open(inputfile, 'r', encoding='utf-8') as f:
         lmtrainText = f.read()
     test_LM_dataset = LanguageModelingDataset(tokenizer, lmtrainText,  block_size)
@@ -186,6 +186,38 @@ def main():
     # num_params = sum(p.numel() for p in classifier.parameters())
     # print(f"Total number of parameters: {num_params}")
     criterion_cls = nn.CrossEntropyLoss()
+
+    classifier_part3 = TransformerClassifier(
+        src_vocab_size=tokenizer.vocab_size,
+        embed_size=n_embd, 
+        num_layers=6,    
+        heads=n_head, 
+        device=device, 
+        forward_expansion=forward_expansion, 
+        dropout=0,      
+        max_length=block_size, 
+        num_classes=n_output
+    ).to(device)
+    optimizer_part3 = torch.optim.Adam(classifier_part3.parameters(), lr=learning_rate)
+    
+    def evaluate(model, dataloader, criterion):
+        model.eval()
+        total_loss = 0.
+        correct = 0
+        total = 0
+        with torch.no_grad():
+            for inputs, targets in dataloader:
+                inputs, targets = inputs.to(device), targets.to(device)
+                output = model(inputs)
+                loss = criterion(output, targets)
+                total_loss += loss.item()
+                _, predicted = torch.max(output, 1)
+                correct += (predicted == targets).sum().item()
+                total += targets.size(0)
+        
+        avg_loss = total_loss / len(dataloader)
+        accuracy = correct / total
+        return avg_loss, accuracy
 
     if len(sys.argv) < 2 or sys.argv[1]=='part1':
      # for the classification  task, you will train for a fixed number of epochs like this:
@@ -245,6 +277,22 @@ def main():
         utils = Utilities(tokenizer, model)
         utils.sanity_check_decoder(sentence, block_size)
 
+    if sys.argv[1]=='part3':
+     # for the classification  task, you will train for a fixed number of epochs like this:
+        for epoch in range(epochs_CLS):
+            #classifier.train()
+            for xb, yb in train_CLS_loader:
+                xb, yb = xb.to(device), yb.to(device)
+                # CLS training code here
+                optimizer_part3.zero_grad()
+                outputs,_ = classifier_part3(xb)
+                loss = criterion_cls(outputs, yb)
+                loss.backward()
+                optimizer_part3.step()
+            accuracy = compute_classifier_accuracy(classifier_part3, test_CLS_loader)
+            print(f'Epoch {epoch+1}/{epochs_CLS}, Train Loss: {loss}, Accuracy: {accuracy:.2f}%')
+
+        print('Training complete.')
 
 
     

@@ -46,7 +46,7 @@ class Utilities:
             plt.title(f"Attention Map {j + 1}")
             
             # Save the plot
-            plt.savefig(f"attention_map_{j + 1}.png")
+            plt.savefig(f"attention_map_{j + 1}.pdf")
             
             # Show the plot
             plt.show()
@@ -94,7 +94,7 @@ class Utilities:
             plt.title(f"Attention Map {j + 1}")
 
             # Save the plot
-            plt.savefig(f"attention_map_{j + 1}.png")
+            plt.savefig(f"attention_map_{j + 1}.pdf")
 
             # Show the plot
             plt.show()
