@@ -6,6 +6,7 @@ import torch.nn.functional as F
 import math
 
 
+# Replacement of nn.MultiheadAttention
 class CustomMultiheadAttention(nn.Module):
     def __init__(self, embed_dim, num_heads, dropout=0.0):
         super(CustomMultiheadAttention, self).__init__()
@@ -217,26 +218,17 @@ class TransformerClassifier(nn.Module):
     
     def forward(self, x, mask=None):
         enc_out,attn_maps  = self.transformer(x, mask)
+
+        # original classifier
         enc_out = enc_out.mean(dim=1)
         out = self.fc(enc_out) # output to num_classes reults, don't add anything else
         return out,attn_maps
+        
+        # Use the embedding of the CLS token for classification
+        # cls_embedding = enc_out[:, 0, :]  # CLS token is the first token
+        # out = self.fc(cls_embedding)
+        # return out, attn_maps
     
-# class TransformerClassifier(nn.Module):
-#     def __init__(self, src_vocab_size, embed_size, num_layers, heads, device, forward_expansion, dropout, max_length, num_classes):
-#         super(TransformerClassifier, self).__init__()
-#         self.transformer = Transformer(src_vocab_size, embed_size, num_layers, heads, device, forward_expansion, dropout, max_length)
-#         self.fc1 = nn.Linear(embed_size, 100)
-#         self.fc2 = nn.Linear(100, num_classes)
-#         self.relu = nn.ReLU()
-
-#     def forward(self, x, mask=None):
-#         enc_out = self.transformer(x, mask)
-#         enc_out = enc_out.mean(dim=1)
-#         out = self.fc1(enc_out)
-#         out = self.relu(out)
-#         out = self.fc2(out)
-#         return out
-
 
 
 

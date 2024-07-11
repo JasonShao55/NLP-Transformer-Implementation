@@ -14,6 +14,8 @@ from utilities import Utilities
 #from transformer import TransformerEncoder, FeedForwardClassifier
 from transformer import TransformerClassifier,TransformerModel
 
+from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
+
 seed = 42
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -22,10 +24,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 the numbers mentioned in the assignment description """
 batch_size = 16  # Number of independent sequences  we will process in parallel
 block_size = 32  # Maximum context length for predictions
-learning_rate = 1e-3  # Learning rate for the optimizer
+learning_rate = 5e-4  # Learning rate for the optimizer
 n_embd = 64  # Embedding dimension
 n_head = 2  # Number of attention heads
-n_layer = 4  # Number of transformer layers
+n_layer = 6  # Number of transformer layers
 
 
 eval_interval = 100  # How often to evaluate train and test perplexity during training
@@ -39,7 +41,7 @@ eval_iters = 200  # Number of iterations to evaluate perplexity on the test set
 n_input = 64  # Input size for the classifier, should match the embedding size of the transformer
 n_hidden = 100  # Hidden size for the classifier
 n_output = 3  # Output size for the classifier, we have 3 classes
-epochs_CLS = 15 # epochs for classifier training
+epochs_CLS = 31 # epochs for classifier training
 forward_expansion=4 # set to 4 like the original paper
 
 def load_texts(directory):
@@ -67,13 +69,6 @@ def collate_batch(batch):
     # Add padding if shorter
     padded_sequences = torch.nn.functional.pad(padded_sequences, (0, max(0, block_size - padded_sequences.shape[1])), "constant", 0)
     labels = torch.stack(labels)  
-    # if len(padded_sequences) < batch_size:
-    #     pad_size = batch_size - len(padded_sequences)
-    #     pad_data = torch.zeros((pad_size, block_size), dtype=padded_sequences.dtype)
-    #     pad_labels = torch.zeros((pad_size,), dtype=labels.dtype)
-    #     padded_sequences = torch.cat((padded_sequences, pad_data), dim=0)
-    #     labels = torch.cat((labels, pad_labels), dim=0)
-
     return padded_sequences, labels
 
 def compute_classifier_accuracy(classifier, data_loader):
@@ -130,6 +125,9 @@ def main():
     print("Loading data and creating tokenizer ...")
     texts = load_texts('speechesdataset')
     tokenizer = SimpleTokenizer(' '.join(texts)) # create a tokenizer from the data
+
+    #tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+
     print("Vocabulary size is", tokenizer.vocab_size)
 
     train_CLS_dataset = SpeechesClassificationDataset(tokenizer, "speechesdataset/train_CLS.tsv")
@@ -183,6 +181,7 @@ def main():
         num_classes=n_output
     ).to(device)
     optimizer_cls = torch.optim.Adam(classifier.parameters(), lr=learning_rate)
+    
     # num_params = sum(p.numel() for p in classifier.parameters())
     # print(f"Total number of parameters: {num_params}")
     criterion_cls = nn.CrossEntropyLoss()
@@ -190,7 +189,7 @@ def main():
     classifier_part3 = TransformerClassifier(
         src_vocab_size=tokenizer.vocab_size,
         embed_size=n_embd, 
-        num_layers=6,    
+        num_layers=4,    
         heads=n_head, 
         device=device, 
         forward_expansion=forward_expansion, 
@@ -198,8 +197,8 @@ def main():
         max_length=block_size, 
         num_classes=n_output
     ).to(device)
-    optimizer_part3 = torch.optim.Adam(classifier_part3.parameters(), lr=learning_rate)
-    
+    optimizer_part3 = AdamW(classifier_part3.parameters(), lr=learning_rate, correct_bias=True)
+
     def evaluate(model, dataloader, criterion):
         model.eval()
         total_loss = 0.

@@ -6,8 +6,6 @@ import torch
 class SpeechesClassificationDataset(Dataset):
     """
     Dataset class for text classification task.
-    This the dataset you will use to train your encoder, and classifier jointly, 
-    end-to-end for the text classification task.
 
     Args:
         tokenizer (Tokenizer): The tokenizer used to encode the text.
@@ -46,7 +44,7 @@ class SpeechesClassificationDataset(Dataset):
 
 class LanguageModelingDataset(torch.utils.data.Dataset):
     """
-    Dataset class for language modeling task. This is the dataset you will use to train your encoder for the language modeling task. 
+    Dataset class for language modeling task. 
 
     Args:
         tokenizer (Tokenizer): The tokenizer used to encode the text.
